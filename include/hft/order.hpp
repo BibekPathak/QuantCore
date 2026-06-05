@@ -76,6 +76,9 @@ struct Trade {
         , quantity(q)
         , side(s)
     {}
+
+    bool is_buy() const { return side == Side::Buy; }
+    bool is_sell() const { return side == Side::Sell; }
 };
 
 struct MarketTick {

@@ -35,7 +35,27 @@ public:
     OrderBook& order_book() { return order_book_; }
     const OrderBook& order_book() const { return order_book_; }
 
-    uint64_t total_trades() const { return trade_id_counter_; }
+    uint64_t total_trades() const { return trade_id_counter_.load(); }
+
+    bool cancel_order(uint64_t order_id) {
+        return order_book_.remove_order(order_id);
+    }
+
+    bool amend_order(uint64_t order_id, uint64_t new_quantity) {
+        return order_book_.modify_quantity(order_id, new_quantity);
+    }
+
+    bool amend_order(uint64_t order_id, int64_t new_price, uint64_t new_quantity) {
+        order_book_.remove_order(order_id);
+        Order* existing = nullptr;
+        if (existing) {
+            existing->price = new_price;
+            existing->quantity = new_quantity;
+            order_book_.add_order(*existing);
+            return true;
+        }
+        return false;
+    }
 
     void reset() {
         order_book_.clear();
