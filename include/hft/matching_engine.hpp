@@ -39,7 +39,7 @@ public:
 
     void reset() {
         order_book_.clear();
-        trade_id_counter_ = 0;
+        trade_id_counter_.store(0);
     }
 
 private:
@@ -189,7 +189,7 @@ private:
 
     OrderBook order_book_;
     TradeCallback callback_;
-    uint64_t trade_id_counter_;
+    std::atomic<uint64_t> trade_id_counter_{0};
 };
 
 }
