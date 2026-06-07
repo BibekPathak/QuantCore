@@ -37,6 +37,8 @@ public:
         asks_.clear();
         order_map_.clear();
         price_to_index_.clear();
+        pending_stop_orders_.clear();
+        oco_links_.clear();
     }
 
     size_t size() const {
@@ -181,6 +183,97 @@ public:
         return vol;
     }
 
+    void add_pending_stop(const Order& order) {
+        pending_stop_orders_.push_back(order);
+    }
+
+    bool remove_pending_stop(uint64_t order_id) {
+        for (auto it = pending_stop_orders_.begin(); it != pending_stop_orders_.end(); ++it) {
+            if (it->order_id == order_id) {
+                pending_stop_orders_.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    const std::vector<Order>& get_pending_stops() const {
+        return pending_stop_orders_;
+    }
+
+    void link_oco_orders(uint64_t order_id_1, uint64_t order_id_2) {
+        oco_links_[order_id_1] = order_id_2;
+        oco_links_[order_id_2] = order_id_1;
+    }
+
+    uint64_t get_linked_order_id(uint64_t order_id) const {
+        auto it = oco_links_.find(order_id);
+        return it != oco_links_.end() ? it->second : 0;
+    }
+
+    void unlink_oco_order(uint64_t order_id) {
+        auto it = oco_links_.find(order_id);
+        if (it != oco_links_.end()) {
+            uint64_t linked_id = it->second;
+            oco_links_.erase(it);
+            oco_links_.erase(linked_id);
+        }
+    }
+
+    void clear_oco_links() {
+        oco_links_.clear();
+    }
+
+    std::optional<uint64_t> check_stop_triggered(uint64_t order_id, int64_t market_price) {
+        for (auto it = pending_stop_orders_.begin(); it != pending_stop_orders_.end(); ++it) {
+            if (it->order_id == order_id) {
+                bool triggered = false;
+                if (it->is_buy() && market_price >= it->stop_price) {
+                    triggered = true;
+                } else if (it->is_sell() && market_price <= it->stop_price) {
+                    triggered = true;
+                }
+                if (triggered) {
+                    Order triggered_order = *it;
+                    triggered_order.status = OrderStatus::Triggered;
+                    pending_stop_orders_.erase(it);
+                    return triggered_order.order_id;
+                }
+                return std::nullopt;
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<Order> check_and_trigger_all_stops(int64_t market_price) {
+        std::vector<Order> triggered;
+        for (auto it = pending_stop_orders_.begin(); it != pending_stop_orders_.end(); ) {
+            bool triggered_flag = false;
+            if (it->is_buy() && market_price >= it->stop_price) {
+                triggered_flag = true;
+            } else if (it->is_sell() && market_price <= it->stop_price) {
+                triggered_flag = true;
+            }
+            if (triggered_flag) {
+                Order triggered_order = *it;
+                triggered_order.status = OrderStatus::Triggered;
+                triggered.push_back(triggered_order);
+                it = pending_stop_orders_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        return triggered;
+    }
+
+    size_t pending_stops_count() const {
+        return pending_stop_orders_.size();
+    }
+
+    size_t oco_links_count() const {
+        return oco_links_.size() / 2;
+    }
+
 private:
     std::vector<PriceLevel> bids_;
     std::vector<PriceLevel> asks_;
@@ -188,6 +281,8 @@ private:
     std::unordered_map<int64_t, size_t> price_to_index_;
     int64_t min_price_;
     int64_t max_price_;
+    std::vector<Order> pending_stop_orders_;
+    std::unordered_map<uint64_t, uint64_t> oco_links_;
 
     bool insert_order(std::vector<PriceLevel>& levels, const Order& order, bool is_bid) {
         auto it = std::lower_bound(levels.begin(), levels.end(), order.price,

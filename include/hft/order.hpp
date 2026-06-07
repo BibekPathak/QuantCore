@@ -12,7 +12,10 @@ enum class Side : uint8_t {
 
 enum class OrderType : uint8_t {
     Market = 0,
-    Limit = 1
+    Limit = 1,
+    StopLoss = 2,
+    StopLimit = 3,
+    Iceberg = 4
 };
 
 enum class OrderStatus : uint8_t {
@@ -20,7 +23,17 @@ enum class OrderStatus : uint8_t {
     PartiallyFilled = 1,
     Filled = 2,
     Cancelled = 3,
-    Rejected = 4
+    Rejected = 4,
+    StopPending = 5,
+    Triggered = 6
+};
+
+enum class TimeInForce : uint8_t {
+    Day = 0,
+    GTC = 1,
+    IOC = 2,
+    FOK = 3,
+    GTD = 4
 };
 
 struct Order {
@@ -33,6 +46,12 @@ struct Order {
     Side side;
     OrderType type;
     OrderStatus status;
+    TimeInForce time_in_force;
+    int64_t stop_price;
+    uint64_t visible_quantity;
+    uint64_t revealed_quantity;
+    uint64_t linked_order_id;
+    uint64_t expire_time;
 
     Order() = default;
 
@@ -46,14 +65,34 @@ struct Order {
         , side(s)
         , type(t)
         , status(OrderStatus::New)
+        , time_in_force(TimeInForce::Day)
+        , stop_price(0)
+        , visible_quantity(q)
+        , revealed_quantity(0)
+        , linked_order_id(0)
+        , expire_time(0)
     {}
 
     bool is_buy() const { return side == Side::Buy; }
     bool is_sell() const { return side == Side::Sell; }
     bool is_filled() const { return filled_quantity >= quantity; }
     bool is_active() const { return status == OrderStatus::New || status == OrderStatus::PartiallyFilled; }
+    bool is_stop_pending() const { return status == OrderStatus::StopPending; }
+    bool is_triggered() const { return status == OrderStatus::Triggered; }
 
     uint64_t remaining_quantity() const { return quantity - filled_quantity; }
+
+    uint64_t remaining_visible() const {
+        return visible_quantity > revealed_quantity ? visible_quantity - revealed_quantity : 0;
+    }
+
+    uint64_t hidden_quantity() const {
+        return quantity > visible_quantity ? quantity - visible_quantity : 0;
+    }
+
+    bool should_reveal_more() const {
+        return hidden_quantity() > 0 && remaining_visible() < visible_quantity / 5;
+    }
 };
 
 struct Trade {

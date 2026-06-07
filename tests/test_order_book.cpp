@@ -5,6 +5,7 @@
 #include "hft/thread_pool.hpp"
 #include "hft/object_pool.hpp"
 #include "hft/risk_manager.hpp"
+#include "hft/strategy.hpp"
 #include <cassert>
 #include <iostream>
 #include <thread>
@@ -1018,6 +1019,279 @@ void test_batched_thread_pool() {
     std::cout << "PASSED\n";
 }
 
+void test_stop_loss_order() {
+    std::cout << "Test: StopLoss Order... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Sell));
+    
+    Order buy_stop(2, 1, 1001, 100000, 100, Side::Buy, OrderType::StopLoss);
+    buy_stop.stop_price = 100050;
+    
+    auto trades = engine.process_order(buy_stop);
+    assert(trades.empty());
+    assert(engine.order_book().pending_stops_count() == 1);
+    
+    trades = engine.on_market_tick(100050);
+    assert(trades.size() == 1);
+    assert(engine.order_book().pending_stops_count() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_stop_loss_not_triggered() {
+    std::cout << "Test: StopLoss Not Triggered... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Sell));
+    
+    Order buy_stop(2, 1, 1001, 100000, 100, Side::Buy, OrderType::StopLoss);
+    buy_stop.stop_price = 100100;
+    
+    auto trades = engine.process_order(buy_stop);
+    assert(trades.empty());
+    assert(engine.order_book().pending_stops_count() == 1);
+    
+    trades = engine.on_market_tick(100050);
+    assert(trades.empty());
+    assert(engine.order_book().pending_stops_count() == 1);
+    
+    trades = engine.on_market_tick(100100);
+    assert(trades.size() == 1);
+    assert(engine.order_book().pending_stops_count() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_stop_limit_order() {
+    std::cout << "Test: StopLimit Order... ";
+    
+    MatchingEngine engine;
+    
+    Order sell_stop(1, 1, 1000, 100000, 100, Side::Sell, OrderType::StopLimit);
+    sell_stop.stop_price = 99900;
+    
+    auto trades = engine.process_order(sell_stop);
+    assert(trades.empty());
+    assert(engine.order_book().pending_stops_count() == 1);
+    
+    trades = engine.on_market_tick(99900);
+    assert(trades.empty());
+    assert(engine.order_book().pending_stops_count() == 0);
+    assert(engine.order_book().has_asks());
+    
+    std::cout << "PASSED\n";
+}
+
+void test_iceberg_order() {
+    std::cout << "Test: Iceberg Order... ";
+    
+    MatchingEngine engine;
+    
+    Order iceberg(1, 1, 1000, 100000, 1000, Side::Buy, OrderType::Iceberg);
+    iceberg.visible_quantity = 100;
+    
+    auto trades = engine.process_order(iceberg);
+    assert(trades.empty());
+    
+    assert(engine.order_book().size() == 1);
+    auto* order = engine.order_book().find_order(1);
+    assert(order != nullptr);
+    assert(order->remaining_quantity() == 100);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_iceberg_with_match() {
+    std::cout << "Test: Iceberg With Match... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 500, Side::Sell));
+    
+    Order iceberg(2, 1, 1001, 100000, 100, Side::Buy, OrderType::Iceberg);
+    iceberg.visible_quantity = 100;
+    
+    auto trades = engine.process_order(iceberg);
+    assert(trades.size() == 1);
+    assert(trades[0].quantity == 100);
+    assert(!engine.order_book().is_empty());
+    
+    std::cout << "PASSED\n";
+}
+
+void test_oco_link() {
+    std::cout << "Test: OCO Link... ";
+    
+    OrderBook ob;
+    
+    Order order1(1, 1, 1000, 100000, 100, Side::Buy);
+    Order order2(2, 1, 1000, 100200, 100, Side::Sell);
+    
+    ob.add_order(order1);
+    ob.add_order(order2);
+    
+    ob.link_oco_orders(1, 2);
+    
+    assert(ob.get_linked_order_id(1) == 2);
+    assert(ob.get_linked_order_id(2) == 1);
+    assert(ob.oco_links_count() == 1);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_oco_cancel() {
+    std::cout << "Test: OCO Cancel... ";
+    
+    MatchingEngine engine;
+    
+    engine.link_oco(1, 2);
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Buy));
+    engine.process_order(Order(2, 1, 1000, 100200, 100, Side::Sell));
+    
+    assert(engine.order_book().size() == 2);
+    
+    bool cancelled = engine.cancel_order(1);
+    assert(cancelled == true);
+    assert(engine.order_book().size() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_oco_fill() {
+    std::cout << "Test: OCO Fill... ";
+    
+    MatchingEngine engine;
+    
+    engine.link_oco(1, 2);
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Buy));
+    
+    engine.process_order(Order(2, 1, 1001, 100000, 100, Side::Sell));
+    engine.process_order(Order(3, 1, 1002, 100000, 100, Side::Buy));
+    
+    assert(engine.order_book().size() == 1);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_order_type_enum() {
+    std::cout << "Test: OrderType Enum... ";
+    
+    assert(static_cast<int>(OrderType::Market) == 0);
+    assert(static_cast<int>(OrderType::Limit) == 1);
+    assert(static_cast<int>(OrderType::StopLoss) == 2);
+    assert(static_cast<int>(OrderType::StopLimit) == 3);
+    assert(static_cast<int>(OrderType::Iceberg) == 4);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_order_status_enum() {
+    std::cout << "Test: OrderStatus Enum... ";
+    
+    assert(static_cast<int>(OrderStatus::New) == 0);
+    assert(static_cast<int>(OrderStatus::PartiallyFilled) == 1);
+    assert(static_cast<int>(OrderStatus::Filled) == 2);
+    assert(static_cast<int>(OrderStatus::Cancelled) == 3);
+    assert(static_cast<int>(OrderStatus::Rejected) == 4);
+    assert(static_cast<int>(OrderStatus::StopPending) == 5);
+    assert(static_cast<int>(OrderStatus::Triggered) == 6);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_order_fields() {
+    std::cout << "Test: Order Fields... ";
+    
+    Order order(1, 2, 1000, 50000, 100, Side::Buy, OrderType::Iceberg);
+    order.stop_price = 51000;
+    order.visible_quantity = 10;
+    order.linked_order_id = 999;
+    
+    assert(order.order_id == 1);
+    assert(order.client_id == 2);
+    assert(order.stop_price == 51000);
+    assert(order.visible_quantity == 10);
+    assert(order.linked_order_id == 999);
+    assert(order.hidden_quantity() == 90);
+    assert(order.remaining_visible() == 10);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_pending_stops() {
+    std::cout << "Test: Pending Stops... ";
+    
+    OrderBook ob;
+    
+    Order stop1(1, 1, 1000, 100000, 100, Side::Buy, OrderType::StopLoss);
+    stop1.stop_price = 100050;
+    ob.add_pending_stop(stop1);
+    
+    Order stop2(2, 1, 1000, 100000, 100, Side::Sell, OrderType::StopLoss);
+    stop2.stop_price = 99950;
+    ob.add_pending_stop(stop2);
+    
+    assert(ob.pending_stops_count() == 2);
+    
+    auto triggered = ob.check_and_trigger_all_stops(100050);
+    assert(triggered.size() == 1);
+    assert(triggered[0].order_id == 1);
+    assert(ob.pending_stops_count() == 1);
+    
+    triggered = ob.check_and_trigger_all_stops(99950);
+    assert(triggered.size() == 1);
+    assert(triggered[0].order_id == 2);
+    assert(ob.pending_stops_count() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_vwap_strategy() {
+    std::cout << "Test: VWAPStrategy... ";
+    
+    VWAPStrategy strategy(1000, 10);
+    assert(strategy.remaining_slices() == 10);
+    assert(strategy.position() == 0);
+    assert(strategy.vwap_price() == 0);
+    
+    MarketTick tick{100, 100000, 100100, 1000, 1000};
+    
+    auto orders = strategy.on_tick(tick, 1, 1);
+    assert(orders.size() <= 1);
+    
+    strategy.reset();
+    assert(strategy.remaining_slices() == 10);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_vwap_market_maker() {
+    std::cout << "Test: VWAPMarketMaker... ";
+    
+    VWAPMarketMaker mm(100, 500);
+    assert(mm.current_vwap() == 0);
+    
+    MarketTick tick{100, 100000, 100100, 1000, 1000};
+    auto orders = mm.on_tick(tick, 1, 1);
+    assert(orders.size() == 2);
+    assert(orders[0].side == Side::Buy);
+    assert(orders[1].side == Side::Sell);
+    
+    int64_t mid = (tick.bid_price + tick.ask_price) / 2;
+    assert(orders[0].price == mid - 50);
+    assert(orders[1].price == mid + 50);
+    
+    mm.reset();
+    assert(mm.current_vwap() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
 int main() {
     std::cout << "Running HFT Unit Tests\n";
     std::cout << "======================\n\n";
@@ -1074,6 +1348,20 @@ int main() {
     test_matching_engine_market_fills();
     test_spsc_queue_wrap();
     test_batched_thread_pool();
+    test_stop_loss_order();
+    test_stop_loss_not_triggered();
+    test_stop_limit_order();
+    test_iceberg_order();
+    test_iceberg_with_match();
+    test_oco_link();
+    test_oco_cancel();
+    test_oco_fill();
+    test_order_type_enum();
+    test_order_status_enum();
+    test_order_fields();
+    test_pending_stops();
+    test_vwap_strategy();
+    test_vwap_market_maker();
     
     std::cout << "\nAll tests passed!\n";
     return 0;
