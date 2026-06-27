@@ -13,8 +13,8 @@ public:
     using TradeCallback = std::function<void(const Trade&)>;
     using EventCallback = std::function<void(const ExchangeEvent&)>;
 
-    explicit MatchingEngine(size_t reserve_capacity = 1024)
-        : order_book_(reserve_capacity)
+    explicit MatchingEngine(LadderConfig cfg = {0, 200000, 1}, size_t arena_capacity = 1 << 22)
+        : order_book_(cfg, arena_capacity)
         , trade_id_counter_(0)
         , sequence_counter_(1)
     {}

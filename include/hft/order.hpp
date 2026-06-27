@@ -52,6 +52,8 @@ struct Order {
     uint64_t revealed_quantity;
     uint64_t linked_order_id;
     uint64_t expire_time;
+    Order* next;
+    Order* prev;
 
     Order() = default;
 
@@ -71,6 +73,8 @@ struct Order {
         , revealed_quantity(0)
         , linked_order_id(0)
         , expire_time(0)
+        , next(nullptr)
+        , prev(nullptr)
     {}
 
     bool is_buy() const { return side == Side::Buy; }
@@ -92,6 +96,24 @@ struct Order {
 
     bool should_reveal_more() const {
         return hidden_quantity() > 0 && remaining_visible() < visible_quantity / 5;
+    }
+};
+
+struct LadderConfig {
+    int64_t min_price;
+    int64_t max_price;
+    int64_t tick_size;
+
+    size_t ladder_size() const {
+        return static_cast<size_t>((max_price - min_price) / tick_size) + 1;
+    }
+
+    size_t price_to_index(int64_t price) const {
+        return static_cast<size_t>((price - min_price) / tick_size);
+    }
+
+    bool in_range(int64_t price) const {
+        return price >= min_price && price <= max_price;
     }
 };
 

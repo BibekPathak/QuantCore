@@ -947,13 +947,10 @@ void test_order_book_get_levels() {
     ob.add_order(Order(3, 1, 1002, 100000, 100, Side::Sell));
     ob.add_order(Order(4, 1, 1003, 100200, 100, Side::Sell));
     
-    auto& bids = ob.get_bids();
-    auto& asks = ob.get_asks();
-    
-    assert(bids.size() == 2);
-    assert(asks.size() == 2);
-    assert(bids[0].price == 100100);
-    assert(asks[0].price == 100000);
+    assert(ob.bid_levels() == 2);
+    assert(ob.ask_levels() == 2);
+    assert(ob.best_bid() == 100100);
+    assert(ob.best_ask() == 100000);
     
     std::cout << "PASSED\n";
 }

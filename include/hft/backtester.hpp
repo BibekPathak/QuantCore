@@ -12,7 +12,7 @@ namespace hft {
 class Backtester {
 public:
     Backtester() 
-        : engine_(100000)
+        : engine_({0, 200000, 1}, 1 << 22)
         , order_id_(0)
         , client_id_(1)
     {}
