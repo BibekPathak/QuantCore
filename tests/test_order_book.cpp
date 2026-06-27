@@ -1289,6 +1289,98 @@ void test_vwap_market_maker() {
     std::cout << "PASSED\n";
 }
 
+void test_event_store() {
+    std::cout << "Test: EventStore Basic... ";
+    
+    EventStore store;
+    assert(store.empty());
+    assert(store.last_sequence() == 0);
+    
+    Trade trade{1, 0, 100, 200, 1000, 50000, 100, Side::Buy};
+    store.publish(trade);
+    assert(store.size() == 1);
+    assert(store.last_sequence() == 1);
+    
+    ExchangeEvent ev{0, EventType::OrderAccepted, 100, 50000, 100, 100, Side::Buy};
+    store.publish(ev);
+    assert(store.size() == 2);
+    
+    const Event& e1 = store.at(1);
+    assert(std::get_if<Trade>(&e1) != nullptr);
+    assert(std::get<Trade>(e1).trade_id == 1);
+    
+    const Event& e2 = store.at(2);
+    assert(std::get_if<ExchangeEvent>(&e2) != nullptr);
+    assert(std::get<ExchangeEvent>(e2).order_id == 100);
+    
+    store.clear();
+    assert(store.empty());
+    
+    std::cout << "PASSED\n";
+}
+
+void test_event_store_replay() {
+    std::cout << "Test: EventStore Replay... ";
+    
+    EventStore store;
+    
+    for (uint64_t i = 1; i <= 10; i++) {
+        Trade t{i, 0, i + 100, 200, 1000, 50000 + (int64_t)i, 100, Side::Buy};
+        store.publish(t);
+    }
+    
+    assert(store.size() == 10);
+    
+    int count = 0;
+    store.replay(3, 7, [&count](const Event& event) {
+        count++;
+        auto& trade = std::get<Trade>(event);
+        assert(trade.trade_id >= 3 && trade.trade_id <= 7);
+    });
+    assert(count == 5);
+    
+    count = 0;
+    store.replay_all([&count](const Event&) { count++; });
+    assert(count == 10);
+    
+    count = 0;
+    store.replay(1, 10, [&count](const Event&) { count++; });
+    assert(count == 10);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_event_store_multi_subscriber() {
+    std::cout << "Test: EventStore Multi-Subscriber... ";
+    
+    EventStore store;
+    int trade_count = 0;
+    int event_count = 0;
+    int all_count = 0;
+    
+    store.subscribe_trades([&](const Trade&) { trade_count++; });
+    store.subscribe_events([&](const ExchangeEvent&) { event_count++; });
+    store.subscribe_all([&](const Event&) { all_count++; });
+    
+    Trade trade{1, 0, 100, 200, 1000, 50000, 100, Side::Buy};
+    store.publish(trade);
+    assert(trade_count == 1);
+    assert(event_count == 0);
+    assert(all_count == 1);
+    
+    ExchangeEvent ev{0, EventType::OrderAccepted, 100, 50000, 100, 100, Side::Buy};
+    store.publish(ev);
+    assert(trade_count == 1);
+    assert(event_count == 1);
+    assert(all_count == 2);
+    
+    store.reset();
+    assert(store.empty());
+    assert(store.size() == 0);
+    
+    std::cout << "PASSED\n";
+}
+
 int main() {
     std::cout << "Running HFT Unit Tests\n";
     std::cout << "======================\n\n";
@@ -1359,6 +1451,10 @@ int main() {
     test_pending_stops();
     test_vwap_strategy();
     test_vwap_market_maker();
+    
+    test_event_store();
+    test_event_store_replay();
+    test_event_store_multi_subscriber();
     
     std::cout << "\nAll tests passed!\n";
     return 0;

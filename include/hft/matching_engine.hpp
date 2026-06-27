@@ -2,6 +2,7 @@
 
 #include "hft/order.hpp"
 #include "hft/order_book.hpp"
+#include "hft/publisher.hpp"
 #include <vector>
 #include <functional>
 #include <atomic>
@@ -20,12 +21,15 @@ public:
     {}
 
     void set_trade_callback(TradeCallback callback) {
-        callback_ = std::move(callback);
+        event_store_.subscribe_trades(std::move(callback));
     }
 
-    void set_event_callback(EventCallback callback) {
-        event_callback_ = std::move(callback);
+    void set_event_callback(std::function<void(const ExchangeEvent&)> callback) {
+        event_store_.subscribe_events(std::move(callback));
     }
+
+    EventStore& event_store() { return event_store_; }
+    const EventStore& event_store() const { return event_store_; }
 
     uint64_t next_sequence() {
         return sequence_counter_.fetch_add(1, std::memory_order_acq_rel);
@@ -43,11 +47,9 @@ public:
         std::vector<Trade> trades;
         trades.reserve(8);
 
-        if (event_callback_) {
-            ExchangeEvent ev(next_sequence(), EventType::OrderAccepted, order.order_id,
-                           order.price, order.quantity, order.quantity, order.side);
-            event_callback_(ev);
-        }
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::OrderAccepted, order.order_id,
+            order.price, order.quantity, order.quantity, order.side));
 
         if (order.type == OrderType::StopLoss) {
             return handle_stop_order(order, true);
@@ -87,17 +89,13 @@ public:
         uint64_t linked_id = order_book_.get_linked_order_id(order_id);
         bool removed = order_book_.remove_order(order_id);
         if (removed) {
-            if (event_callback_) {
-                ExchangeEvent ev(next_sequence(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy);
-                event_callback_(ev);
-            }
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy));
             if (linked_id != 0) {
                 order_book_.remove_order(linked_id);
                 order_book_.unlink_oco_order(order_id);
-                if (event_callback_) {
-                    ExchangeEvent ev2(next_sequence(), EventType::OrderCancelled, linked_id, 0, 0, 0, Side::Buy);
-                    event_callback_(ev2);
-                }
+                event_store_.publish(ExchangeEvent(
+                    next_sequence(), EventType::OrderCancelled, linked_id, 0, 0, 0, Side::Buy));
             }
         }
         return removed;
@@ -116,24 +114,23 @@ public:
 
     void reset() {
         order_book_.clear();
+        event_store_.clear();
         trade_id_counter_.store(0);
         sequence_counter_.store(1);
     }
 
     bool amend_order(uint64_t order_id, uint64_t new_quantity) {
         bool changed = order_book_.modify_quantity(order_id, new_quantity);
-        if (changed && event_callback_) {
-            ExchangeEvent ev(next_sequence(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy);
-            event_callback_(ev);
+        if (changed) {
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy));
         }
         return changed;
     }
 
     template<typename Func>
-    void replay(uint64_t seq_start, uint64_t seq_end, Func&& event_handler) {
-        EventCallback saved_cb = event_callback_;
-        event_callback_ = std::forward<Func>(event_handler);
-        event_callback_ = saved_cb;
+    void replay(uint64_t seq_start, uint64_t seq_end, Func&& handler) {
+        event_store_.replay(seq_start, seq_end, std::forward<Func>(handler));
     }
 
 private:
@@ -143,14 +140,10 @@ private:
 
     void emit_trade(Trade& trade) {
         trade.sequence = next_sequence();
-        if (callback_) {
-            callback_(trade);
-        }
-        if (event_callback_) {
-            ExchangeEvent ev(trade.sequence, EventType::OrderFilled, trade.order_id,
-                           trade.price, trade.quantity, 0, trade.side);
-            event_callback_(ev);
-        }
+        event_store_.publish(trade);
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::OrderFilled, trade.order_id,
+            trade.price, trade.quantity, 0, trade.side));
     }
 
     std::vector<Trade> handle_limit_order(const Order& order) {
@@ -218,13 +211,11 @@ private:
         return trades;
     }
 
-    std::vector<Trade> handle_stop_order(const Order& order, bool as_market) {
+    std::vector<Trade> handle_stop_order(const Order& order, bool) {
         order_book_.add_pending_stop(order);
-        if (event_callback_) {
-            ExchangeEvent ev(next_sequence(), EventType::StopTriggered, order.order_id,
-                           order.stop_price, order.quantity, order.quantity, order.side);
-            event_callback_(ev);
-        }
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::StopTriggered, order.order_id,
+            order.stop_price, order.quantity, order.quantity, order.side));
         return {};
     }
 
@@ -351,8 +342,7 @@ private:
     }
 
     OrderBook order_book_;
-    TradeCallback callback_;
-    EventCallback event_callback_;
+    EventStore event_store_;
     std::atomic<uint64_t> trade_id_counter_{0};
     std::atomic<uint64_t> sequence_counter_{1};
 };
