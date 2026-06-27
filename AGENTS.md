@@ -2,10 +2,10 @@
 
 ## Build Commands
 ```bash
-# Compile main program
-g++ -std=c++20 -O3 -march=native -I include -o hft_test src/main.cpp
+# Compile main program (with Binance WebSocket feed)
+g++ -std=c++20 -O3 -march=native -I include -o hft_test src/main.cpp -lcurl -lssl -lcrypto
 
-# Compile tests
+# Compile tests (standalone, no external deps)
 g++ -std=c++20 -O3 -march=native -I include -o test_order_book tests/test_order_book.cpp
 
 # Run main program
@@ -13,6 +13,9 @@ g++ -std=c++20 -O3 -march=native -I include -o test_order_book tests/test_order_
 
 # Run tests
 ./test_order_book
+
+# Quick compile check for Binance feed
+g++ -std=c++20 -O2 -I include -c include/hft/binance_feed.hpp -o /dev/null -lcurl -lssl -lcrypto
 ```
 
 ## Performance Results (Current)
@@ -23,21 +26,24 @@ g++ -std=c++20 -O3 -march=native -I include -o test_order_book tests/test_order_
 ## Project Structure
 ```
 hft/
-├── include/hft/
-│   ├── order.hpp            # Order, Trade, MarketTick, LadderConfig structs
-│   ├── arena.hpp            # Arena allocator (bump + intrusive free list)
-│   ├── order_book.hpp       # Dense price ladder + intrusive linked lists
-│   ├── matching_engine.hpp  # Price-time priority matching + EventStore
-│   ├── publisher.hpp        # EventStore - sequenced event log + replay
-│   ├── market_data_feed.hpp # CSV/synthetic data loader
-│   ├── strategy.hpp         # Strategy interface & implementations
-│   ├── backtester.hpp       # Simulation orchestrator
-│   ├── metrics.hpp          # Latency/throughput tracking
-│   ├── lock_free_queue.hpp  # Lock-free MPMC queue
-│   ├── thread_safe_matching_engine.hpp
-│   ├── thread_pool.hpp
-│   ├── object_pool.hpp      # Generic & aligned object pools
-│   └── risk_manager.hpp     # Risk-constrained matching engine
+├── include/
+│   ├── json.hpp               # nlohmann/json (single header, v3.11.3)
+│   └── hft/
+│       ├── order.hpp            # Order, Trade, MarketTick, LadderConfig structs
+│       ├── arena.hpp            # Arena allocator (bump + intrusive free list)
+│       ├── order_book.hpp       # Dense price ladder + intrusive linked lists
+│       ├── matching_engine.hpp  # Price-time priority matching + EventStore
+│       ├── publisher.hpp        # EventStore - sequenced event log + replay
+│       ├── market_data_feed.hpp # CSV/synthetic data loader
+│       ├── binance_feed.hpp     # Binance WebSocket feed (libcurl + nlohmann/json)
+│       ├── strategy.hpp         # Strategy interface & implementations
+│       ├── backtester.hpp       # Simulation orchestrator
+│       ├── metrics.hpp          # Latency/throughput tracking
+│       ├── lock_free_queue.hpp  # Lock-free MPMC queue
+│       ├── thread_safe_matching_engine.hpp
+│       ├── thread_pool.hpp
+│       ├── object_pool.hpp      # Generic & aligned object pools
+│       └── risk_manager.hpp     # Risk-constrained matching engine
 ├── src/
 │   └── main.cpp             # Demo program (backtest + direct throughput)
 └── tests/
