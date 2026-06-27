@@ -24,6 +24,12 @@ g++ -std=c++20 -O2 -I include -c include/hft/binance_feed.hpp -o /dev/null -lcur
 - **P99 Latency**: ~2.8μs (full backtest)
 - **Order struct size**: 128 bytes (alignas(64))
 - **73 unit tests** all passing
+- **Benchmark results**:
+  - OrderBook find: 28ns (50K-level book)
+  - MatchingEngine single limit: 116ns median, 2.6μs P99
+  - EventStore replay: 28ns per event
+  - LockFreeQueue enq+deq: 49ns
+  - RiskManager check_order: 28ns
 
 ## Project Structure
 ```
@@ -41,13 +47,21 @@ hft/
 │       ├── strategy.hpp         # Strategy interface & implementations
 │       ├── backtester.hpp       # Simulation orchestrator
 │       ├── metrics.hpp          # Latency/throughput tracking
+│       ├── benchmark.hpp        # Custom benchmark framework (latency/throughput)
 │       ├── lock_free_queue.hpp  # Lock-free MPMC queue
 │       ├── thread_safe_matching_engine.hpp
-│       ├── thread_pool.hpp
+│       ├── thread_pool.hpp      # Fixed: active_tasks_ under mutex, exception-safe
 │       ├── object_pool.hpp      # Generic & aligned object pools
 │       └── risk_manager.hpp     # Risk-constrained matching engine
 ├── src/
 │   └── main.cpp             # Demo program (backtest + direct throughput)
+├── benchmarks/
+│   ├── benchmark.cpp         # Comprehensive benchmarks (all components)
+│   ├── simd_benchmark.cpp    # SIMD-specific benchmarks
+│   ├── Makefile              # Build targets: make, make run, make perf, make flamegraph
+│   ├── run_all_benchmarks.sh # Launcher script
+│   ├── perf_profile.sh       # Linux perf profiling wrapper
+│   └── flamegraph_gen.sh     # FlameGraph SVG generation
 └── tests/
     └── test_order_book.cpp  # 73 unit tests
 ```
@@ -74,7 +88,8 @@ hft/
 - ✅ Phase 5: Binance WebSocket feed integration
 - ✅ Phase 6: PostOnly, IOC, FOK order types
 - ✅ Phase 7: CPU optimizations (alignas(64), prefetch, branch hints, field reordering)
+- ✅ Phase 8: Google Benchmark suite + perf + flamegraphs
+- ✅ Phase 9: Architecture documentation with Mermaid diagrams
 
 ## Next Steps
-1. Phase 8: Google Benchmark suite + perf + flamegraphs
-2. Phase 9: Architecture documentation with Mermaid diagrams
+- All phases complete. Project is ready for interview walkthroughs.

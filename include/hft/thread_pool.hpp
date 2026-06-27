@@ -22,6 +22,9 @@ public:
         }
     }
 
+    ThreadPool(const ThreadPool&) = delete;
+    ThreadPool& operator=(const ThreadPool&) = delete;
+
     ~ThreadPool() {
         running_.store(false, std::memory_order_release);
         cv_.notify_all();
@@ -64,21 +67,27 @@ private:
                 cv_.wait(lock, [this] { 
                     return !running_.load(std::memory_order_acquire) || !tasks_.empty(); 
                 });
-                if (!running_.load(std::memory_order_acquire)) {
+                if (!running_.load(std::memory_order_acquire)) [[unlikely]] {
                     break;
                 }
-                if (tasks_.empty()) {
+                if (tasks_.empty()) [[unlikely]] {
                     continue;
                 }
                 task = std::move(tasks_.front());
                 tasks_.pop();
                 active_tasks_++;
             }
-            if (task) {
-                task();
+            if (task) [[likely]] {
+                try {
+                    task();
+                } catch (...) {
+                }
+                {
+                    std::lock_guard<std::mutex> lock(queue_mutex_);
+                    active_tasks_--;
+                }
+                cv_.notify_all();
             }
-            active_tasks_--;
-            cv_.notify_all();
         }
     }
 
@@ -87,7 +96,7 @@ private:
     mutable std::mutex queue_mutex_;
     std::condition_variable cv_;
     std::atomic<bool> running_;
-    std::atomic<size_t> active_tasks_{0};
+    size_t active_tasks_{0};
 };
 
 class BatchedThreadPool {
