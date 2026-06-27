@@ -11,19 +11,43 @@ namespace hft {
 class MatchingEngine {
 public:
     using TradeCallback = std::function<void(const Trade&)>;
+    using EventCallback = std::function<void(const ExchangeEvent&)>;
 
     explicit MatchingEngine(size_t reserve_capacity = 1024)
         : order_book_(reserve_capacity)
         , trade_id_counter_(0)
+        , sequence_counter_(1)
     {}
 
     void set_trade_callback(TradeCallback callback) {
         callback_ = std::move(callback);
     }
 
+    void set_event_callback(EventCallback callback) {
+        event_callback_ = std::move(callback);
+    }
+
+    uint64_t next_sequence() {
+        return sequence_counter_.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    uint64_t last_sequence() const {
+        return sequence_counter_.load(std::memory_order_acquire) - 1;
+    }
+
+    void set_sequence_counter(uint64_t seq) {
+        sequence_counter_.store(seq, std::memory_order_release);
+    }
+
     std::vector<Trade> process_order(const Order& order) {
         std::vector<Trade> trades;
         trades.reserve(8);
+
+        if (event_callback_) {
+            ExchangeEvent ev(next_sequence(), EventType::OrderAccepted, order.order_id,
+                           order.price, order.quantity, order.quantity, order.side);
+            event_callback_(ev);
+        }
 
         if (order.type == OrderType::StopLoss) {
             return handle_stop_order(order, true);
@@ -59,24 +83,24 @@ public:
 
     uint64_t total_trades() const { return trade_id_counter_.load(); }
 
-bool cancel_order(uint64_t order_id) {
+    bool cancel_order(uint64_t order_id) {
         uint64_t linked_id = order_book_.get_linked_order_id(order_id);
         bool removed = order_book_.remove_order(order_id);
-        if (removed && linked_id != 0) {
-            order_book_.remove_order(linked_id);
-            order_book_.unlink_oco_order(order_id);
+        if (removed) {
+            if (event_callback_) {
+                ExchangeEvent ev(next_sequence(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy);
+                event_callback_(ev);
+            }
+            if (linked_id != 0) {
+                order_book_.remove_order(linked_id);
+                order_book_.unlink_oco_order(order_id);
+                if (event_callback_) {
+                    ExchangeEvent ev2(next_sequence(), EventType::OrderCancelled, linked_id, 0, 0, 0, Side::Buy);
+                    event_callback_(ev2);
+                }
+            }
         }
         return removed;
-    }
-
-    std::vector<Trade> cancel_oco_pair(uint64_t filled_order_id) {
-        std::vector<Trade> trades;
-        uint64_t linked_id = order_book_.get_linked_order_id(filled_order_id);
-        if (linked_id != 0) {
-            order_book_.remove_order(linked_id);
-            order_book_.unlink_oco_order(filled_order_id);
-        }
-        return trades;
     }
 
     void link_oco(uint64_t order_id_1, uint64_t order_id_2) {
@@ -93,25 +117,42 @@ bool cancel_order(uint64_t order_id) {
     void reset() {
         order_book_.clear();
         trade_id_counter_.store(0);
+        sequence_counter_.store(1);
     }
 
     bool amend_order(uint64_t order_id, uint64_t new_quantity) {
-        return order_book_.modify_quantity(order_id, new_quantity);
+        bool changed = order_book_.modify_quantity(order_id, new_quantity);
+        if (changed && event_callback_) {
+            ExchangeEvent ev(next_sequence(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy);
+            event_callback_(ev);
+        }
+        return changed;
     }
 
-    bool amend_order(uint64_t order_id, int64_t new_price, uint64_t new_quantity) {
-        order_book_.remove_order(order_id);
-        Order* existing = nullptr;
-        if (existing) {
-            existing->price = new_price;
-            existing->quantity = new_quantity;
-            order_book_.add_order(*existing);
-            return true;
-        }
-        return false;
+    template<typename Func>
+    void replay(uint64_t seq_start, uint64_t seq_end, Func&& event_handler) {
+        EventCallback saved_cb = event_callback_;
+        event_callback_ = std::forward<Func>(event_handler);
+        event_callback_ = saved_cb;
     }
 
 private:
+    uint64_t next_trade_id() {
+        return ++trade_id_counter_;
+    }
+
+    void emit_trade(Trade& trade) {
+        trade.sequence = next_sequence();
+        if (callback_) {
+            callback_(trade);
+        }
+        if (event_callback_) {
+            ExchangeEvent ev(trade.sequence, EventType::OrderFilled, trade.order_id,
+                           trade.price, trade.quantity, 0, trade.side);
+            event_callback_(ev);
+        }
+    }
+
     std::vector<Trade> handle_limit_order(const Order& order) {
         std::vector<Trade> trades;
         Order mutable_order = order;
@@ -127,19 +168,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_ask->order_id,
-                    mutable_order.timestamp,
-                    match_price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_ask->order_id, mutable_order.timestamp,
+                    match_price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -162,19 +196,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_bid->order_id,
-                    mutable_order.timestamp,
-                    match_price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_bid->order_id, mutable_order.timestamp,
+                    match_price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -193,6 +220,11 @@ private:
 
     std::vector<Trade> handle_stop_order(const Order& order, bool as_market) {
         order_book_.add_pending_stop(order);
+        if (event_callback_) {
+            ExchangeEvent ev(next_sequence(), EventType::StopTriggered, order.order_id,
+                           order.stop_price, order.quantity, order.quantity, order.side);
+            event_callback_(ev);
+        }
         return {};
     }
 
@@ -217,19 +249,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_ask->order_id,
-                    mutable_order.timestamp,
-                    match_price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_ask->order_id, mutable_order.timestamp,
+                    match_price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -252,19 +277,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_bid->order_id,
-                    mutable_order.timestamp,
-                    match_price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_bid->order_id, mutable_order.timestamp,
+                    match_price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -293,19 +311,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_ask->order_id,
-                    mutable_order.timestamp,
-                    best_ask->price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_ask->order_id, mutable_order.timestamp,
+                    best_ask->price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -321,19 +332,12 @@ private:
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
 
                 Trade trade{
-                    ++trade_id_counter_,
-                    mutable_order.order_id,
-                    best_bid->order_id,
-                    mutable_order.timestamp,
-                    best_bid->price,
-                    match_qty,
-                    mutable_order.side
+                    next_trade_id(), 0, mutable_order.order_id,
+                    best_bid->order_id, mutable_order.timestamp,
+                    best_bid->price, match_qty, mutable_order.side
                 };
+                emit_trade(trade);
                 trades.push_back(trade);
-
-                if (callback_) {
-                    callback_(trade);
-                }
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
@@ -348,7 +352,9 @@ private:
 
     OrderBook order_book_;
     TradeCallback callback_;
+    EventCallback event_callback_;
     std::atomic<uint64_t> trade_id_counter_{0};
+    std::atomic<uint64_t> sequence_counter_{1};
 };
 
 }

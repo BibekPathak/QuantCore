@@ -97,6 +97,7 @@ struct Order {
 
 struct Trade {
     uint64_t trade_id;
+    uint64_t sequence;
     uint64_t order_id;
     uint64_t counter_order_id;
     uint64_t timestamp;
@@ -106,8 +107,9 @@ struct Trade {
 
     Trade() = default;
 
-    Trade(uint64_t tid, uint64_t oid, uint64_t coid, uint64_t ts, int64_t p, uint64_t q, Side s)
+    Trade(uint64_t tid, uint64_t seq, uint64_t oid, uint64_t coid, uint64_t ts, int64_t p, uint64_t q, Side s)
         : trade_id(tid)
+        , sequence(seq)
         , order_id(oid)
         , counter_order_id(coid)
         , timestamp(ts)
@@ -120,8 +122,66 @@ struct Trade {
     bool is_sell() const { return side == Side::Sell; }
 };
 
+struct BookUpdate {
+    uint64_t sequence;
+    int64_t price;
+    uint64_t size;
+    Side side;
+    uint64_t order_count;
+    uint64_t volume;
+
+    BookUpdate() = default;
+
+    BookUpdate(uint64_t seq, int64_t p, uint64_t s, Side sd, uint64_t oc, uint64_t v)
+        : sequence(seq), price(p), size(s), side(sd), order_count(oc), volume(v)
+    {}
+};
+
+struct OrderEvent {
+    uint64_t sequence;
+    uint64_t order_id;
+    OrderStatus status;
+    uint64_t filled_quantity;
+    int64_t fill_price;
+    uint64_t fill_quantity;
+
+    OrderEvent() = default;
+
+    OrderEvent(uint64_t seq, uint64_t oid, OrderStatus st)
+        : sequence(seq), order_id(oid), status(st), filled_quantity(0), fill_price(0), fill_quantity(0)
+    {}
+};
+
+enum class EventType : uint8_t {
+    OrderAccepted = 0,
+    OrderFilled = 1,
+    OrderPartiallyFilled = 2,
+    OrderCancelled = 3,
+    OrderRejected = 4,
+    OrderModified = 5,
+    StopTriggered = 6,
+    BookUpdated = 7
+};
+
+struct ExchangeEvent {
+    uint64_t sequence;
+    EventType type;
+    uint64_t order_id;
+    int64_t price;
+    uint64_t quantity;
+    uint64_t remaining;
+    Side side;
+
+    ExchangeEvent() = default;
+
+    ExchangeEvent(uint64_t seq, EventType t, uint64_t oid, int64_t p, uint64_t q, uint64_t rem, Side s)
+        : sequence(seq), type(t), order_id(oid), price(p), quantity(q), remaining(rem), side(s)
+    {}
+};
+
 struct MarketTick {
     uint64_t timestamp;
+    uint64_t sequence;
     int64_t bid_price;
     int64_t ask_price;
     uint64_t bid_size;
@@ -129,8 +189,9 @@ struct MarketTick {
 
     MarketTick() = default;
 
-    MarketTick(uint64_t ts, int64_t bp, int64_t ap, uint64_t bs, uint64_t as)
+    MarketTick(uint64_t ts, uint64_t seq, int64_t bp, int64_t ap, uint64_t bs, uint64_t as)
         : timestamp(ts)
+        , sequence(seq)
         , bid_price(bp)
         , ask_price(ap)
         , bid_size(bs)

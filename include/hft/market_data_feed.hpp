@@ -24,6 +24,7 @@ public:
         ticks_.clear();
         ticks_.reserve(100000);
 
+        uint64_t seq = 1;
         while (std::getline(file, line)) {
             size_t pos = 0;
             auto next_token = [&]() {
@@ -40,7 +41,7 @@ public:
             uint64_t bid_size = std::stoull(next_token());
             uint64_t ask_size = std::stoull(next_token());
 
-            ticks_.emplace_back(timestamp, bid_price, ask_price, bid_size, ask_size);
+            ticks_.emplace_back(timestamp, seq++, bid_price, ask_price, bid_size, ask_size);
         }
 
         index_ = 0;
@@ -63,7 +64,7 @@ public:
             uint64_t bid_size = (rand() % 100 + 1) * 100;
             uint64_t ask_size = (rand() % 100 + 1) * 100;
 
-            ticks_.emplace_back(ts + i * 1000, bid, ask, bid_size, ask_size);
+            ticks_.emplace_back(ts + i * 1000, i + 1, bid, ask, bid_size, ask_size);
         }
 
         index_ = 0;

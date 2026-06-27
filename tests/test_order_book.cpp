@@ -303,7 +303,7 @@ void test_trade_pool() {
     TradePool pool(1000);
     assert(pool.available() == 1000);
     
-    Trade* trade = pool.create(1, 2, 3, 1000, 100000, 100, Side::Buy);
+    Trade* trade = pool.create(1, 0, 2, 3, 1000, 100000, 100, Side::Buy);
     assert(trade != nullptr);
     assert(pool.available() == 999);
     
@@ -451,10 +451,10 @@ void test_risk_manager_position() {
     Order buy3(3, 1, 1000, 100000, 200, Side::Buy);
     
     assert(rm.check_position(buy1, 0).approved == true);
-    rm.record_trade({1, 1, 2, 1000, 100000, 200, Side::Buy});
+    rm.record_trade({1, 0, 1, 2, 1000, 100000, 200, Side::Buy});
     
     assert(rm.check_position(buy2, rm.net_position()).approved == true);
-    rm.record_trade({2, 2, 3, 1000, 100000, 200, Side::Buy});
+    rm.record_trade({2, 0, 2, 3, 1000, 100000, 200, Side::Buy});
     
     assert(rm.check_position(buy3, rm.net_position()).approved == false);
     
@@ -800,7 +800,7 @@ void test_risk_manager_reset() {
     limits.max_position = 100;
     RiskManager rm(limits);
     
-    rm.record_trade({1, 1, 2, 1000, 100000, 50, Side::Buy});
+    rm.record_trade({1, 0, 1, 2, 1000, 100000, 50, Side::Buy});
     assert(rm.net_position() == 50);
     assert(rm.order_count() == 1);
     
@@ -819,7 +819,7 @@ void test_risk_manager_daily_loss() {
     limits.max_daily_loss = -1000;
     RiskManager rm(limits);
     
-    rm.record_trade({1, 1, 2, 1000, 100000, 50, Side::Sell});
+    rm.record_trade({1, 0, 1, 2, 1000, 100000, 50, Side::Sell});
     assert(rm.daily_pnl() > 0);
     
     auto check = rm.check_daily_loss();
@@ -1259,7 +1259,7 @@ void test_vwap_strategy() {
     assert(strategy.position() == 0);
     assert(strategy.vwap_price() == 0);
     
-    MarketTick tick{100, 100000, 100100, 1000, 1000};
+    MarketTick tick{100, 1, 100000, 100100, 1000, 1000};
     
     auto orders = strategy.on_tick(tick, 1, 1);
     assert(orders.size() <= 1);
@@ -1276,7 +1276,7 @@ void test_vwap_market_maker() {
     VWAPMarketMaker mm(100, 500);
     assert(mm.current_vwap() == 0);
     
-    MarketTick tick{100, 100000, 100100, 1000, 1000};
+    MarketTick tick{100, 1, 100000, 100100, 1000, 1000};
     auto orders = mm.on_tick(tick, 1, 1);
     assert(orders.size() == 2);
     assert(orders[0].side == Side::Buy);
