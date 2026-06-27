@@ -1,6 +1,7 @@
 #include "hft/backtester.hpp"
 #include "hft/strategy.hpp"
 #include "hft/binance_feed.hpp"
+#include "hft/exchange.hpp"
 #include <iostream>
 #include <memory>
 #include <chrono>
@@ -128,6 +129,35 @@ int main() {
     std::cout << "Processed " << num_orders << " orders in " << engine_duration.count() << " us\n";
     std::cout << "Throughput: " << (num_orders * 1000000.0 / engine_duration.count()) << " orders/sec\n";
     std::cout << "Total trades: " << engine.total_trades() << "\n";
+
+    std::cout << "\nTesting Exchange Pipeline...\n";
+    std::cout << "-----------------------------\n";
+    {
+        Exchange exchange;
+        Order buy(1, 1, 1000, 100000, 100, Side::Buy);
+        Order sell(2, 1, 1001, 100000, 100, Side::Sell);
+
+        auto r1 = exchange.submit(buy);
+        std::cout << "  submit(buy): accepted=" << r1.accepted
+                  << " trades=" << r1.trades.size() << "\n";
+
+        auto r2 = exchange.submit(sell);
+        std::cout << "  submit(sell): accepted=" << r2.accepted
+                  << " trades=" << r2.trades.size() << "\n";
+
+        // Test risk rejection
+        Exchange restricted;
+        RiskLimits tight_limits;
+        tight_limits.max_order_size = 10;
+        restricted.risk().set_limits(tight_limits);
+        Order big(3, 1, 1002, 100000, 100, Side::Buy);
+        auto r3 = restricted.submit(big);
+        std::cout << "  submit(oversized): accepted=" << r3.accepted
+                  << " reason=\"" << r3.reason << "\"\n";
+
+        std::cout << "  Total events in store: " << exchange.events().size() << "\n";
+        std::cout << "  Last sequence: " << exchange.sequencer().last() << "\n";
+    }
 
     return 0;
 }

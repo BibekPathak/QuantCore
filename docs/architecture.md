@@ -6,36 +6,65 @@ A low-latency C++20 matching engine and exchange simulator designed for algorith
 
 ```mermaid
 graph TB
-    subgraph Input
-        FD[MarketDataFeed<br/>CSV/Synthetic]
-        BF[BinanceFeed<br/>WebSocket]
-        ST[Strategy<br/>VWAP / MarketMaker]
+    subgraph Gateway
+        GW[Client / Strategy]
     end
 
-    subgraph Core
-        ME[MatchingEngine]
-        OB[OrderBook<br/>Dense Price Ladder]
-        ES[EventStore<br/>Sequenced Log]
+    subgraph Exchange
+        SQ[Sequencer]
         RM[RiskManager]
+        ME[MatchingEngine]
+        ES[EventStore]
+    end
+
+    subgraph OrderBook
+        OB[Dense Price Ladder]
+        AR[Arena Allocator]
     end
 
     subgraph Infrastructure
-        AR[Arena Allocator<br/>Bump + Free List]
-        TP[ThreadPool<br/>Multi-Worker]
-        LFQ[LockFreeQueue<br/>MPMC]
-        OP[ObjectPool<br/>Aligned]
+        TP[ThreadPool]
+        LFQ[LockFreeQueue]
     end
 
-    FD --> ME
-    BF --> ME
-    ST --> ME
+    GW -->|submit(order)| SQ
+    SQ -->|seq| RM
+    RM -->|check| ME
     ME --> OB
     ME --> ES
-    ME --> RM
     OB --> AR
-    RM --> OP
+    ES -->|publish| TP
     TP --> LFQ
 ```
+
+The **Exchange** class orchestrates the full pipeline:
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant EX as Exchange
+    participant SQ as Sequencer
+    participant RM as RiskManager
+    participant ME as MatchingEngine
+    participant ES as EventStore
+
+    C->>EX: submit(order)
+    EX->>SQ: next_seq()
+    SQ-->>EX: seq=1001
+    EX->>RM: check_order(order)
+    RM-->>EX: approved
+    EX->>ME: process_order(seq, order)
+    ME->>ES: publish(seq++, OrderAccepted)
+    loop matching
+        ME->>ES: publish(seq++, Trade)
+        ME->>ES: publish(seq++, OrderFilled)
+    end
+    ME-->>EX: trades
+    EX->>RM: record_trade(trade)
+    EX-->>C: SubmitResult{trades, accepted}
+```
+
+The `MatchingEngine` also retains a backward-compat overload `process_order(const Order&)` that uses an internal default `Sequencer`, so existing tests and direct embedding scenarios work without changes.
 
 **Key design principles:**
 1. **Zero-copy matching** — Intrusive linked lists avoid allocations on hot path
@@ -354,6 +383,8 @@ graph TB
 
 ```
 include/hft/
+├── sequencer.hpp        # Atomic sequence counter
+├── exchange.hpp         # Pipeline: Sequencer → Risk → Matching → Publisher
 ├── order.hpp            # Order, Trade, MarketTick, LadderConfig
 ├── arena.hpp            # Bump + free-list arena allocator
 ├── order_book.hpp       # Dense ladder + intrusive lists + best-bid/ask
@@ -372,16 +403,3 @@ include/hft/
 └── risk_manager.hpp     # Risk-constrained matching wrapper
 ```
 
----
-
-## Interview Tips
-
-1. **Why dense ladder over tree?** — O(1) price level access vs O(log N) for a tree-based book. The trade-off is fixed price range (configurable via LadderConfig). For crypto/equity markets with known tick sizes, this is the standard approach.
-
-2. **Why intrusive lists?** — Zero allocations on the matching hot path. Orders carry their own linkage, so removing from the middle of a price level is O(1). Non-intrusive containers (e.g., `std::list`) would allocate nodes separately.
-
-3. **Why EventStore?** — Audit trail, backtesting replay, market reconstruction. Every event is sequenced so you can reconstruct any point in time. O(1) random access enables fast range queries.
-
-4. **Why separate bid/ask ladders?** — A bid at $100 and an ask at $100 live in different vectors, so modifying one doesn't evict the other's cache line.
-
-5. **Sequence numbers on all events** — Foundation for exactly-once delivery, gap detection, and LOB snapshot reconstruction.

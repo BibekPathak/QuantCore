@@ -3,6 +3,7 @@
 #include "hft/order.hpp"
 #include "hft/order_book.hpp"
 #include "hft/publisher.hpp"
+#include "hft/sequencer.hpp"
 #include <vector>
 #include <functional>
 #include <atomic>
@@ -17,7 +18,6 @@ public:
     explicit MatchingEngine(LadderConfig cfg = {0, 200000, 1}, size_t arena_capacity = 1 << 22)
         : order_book_(cfg, arena_capacity)
         , trade_id_counter_(0)
-        , sequence_counter_(1)
     {}
 
     void set_trade_callback(TradeCallback callback) {
@@ -31,72 +31,68 @@ public:
     EventStore& event_store() { return event_store_; }
     const EventStore& event_store() const { return event_store_; }
 
-    uint64_t next_sequence() {
-        return sequence_counter_.fetch_add(1, std::memory_order_acq_rel);
-    }
-
-    uint64_t last_sequence() const {
-        return sequence_counter_.load(std::memory_order_acquire) - 1;
-    }
-
-    void set_sequence_counter(uint64_t seq) {
-        sequence_counter_.store(seq, std::memory_order_release);
-    }
-
-    std::vector<Trade> process_order(const Order& order) {
+    std::vector<Trade> process_order(Sequencer& seq, const Order& order) {
         std::vector<Trade> trades;
         trades.reserve(8);
 
         if (order.type == OrderType::StopLoss) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderAccepted, order.order_id,
+                seq.next(), EventType::OrderAccepted, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
-            return handle_stop_order(order, true);
+            return handle_stop_order(seq, order, true);
         }
         if (order.type == OrderType::StopLimit) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderAccepted, order.order_id,
+                seq.next(), EventType::OrderAccepted, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
-            return handle_stop_order(order, false);
+            return handle_stop_order(seq, order, false);
         }
 
         if (order.type == OrderType::PostOnly) [[unlikely]] {
-            return handle_post_only(order);
+            return handle_post_only(seq, order);
         }
 
         if (order.time_in_force == TimeInForce::FOK) [[unlikely]] {
-            return handle_fok(order);
+            return handle_fok(seq, order);
         }
 
         if (order.time_in_force == TimeInForce::IOC) [[unlikely]] {
-            return handle_ioc(order);
+            return handle_ioc(seq, order);
         }
 
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::OrderAccepted, order.order_id,
+            seq.next(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
         if (order.type == OrderType::Iceberg) [[unlikely]] {
-            return handle_iceberg_order(order);
+            return handle_iceberg_order(seq, order);
         }
         if (order.type == OrderType::Market) [[unlikely]] {
-            return handle_market_order(order);
+            return handle_market_order(seq, order);
         }
 
-        return handle_limit_order(order);
+        return handle_limit_order(seq, order);
     }
 
-    std::vector<Trade> on_market_tick(int64_t market_price) {
+    std::vector<Trade> process_order(const Order& order) {
+        return process_order(default_sequencer_, order);
+    }
+
+    std::vector<Trade> on_market_tick(Sequencer& seq, int64_t market_price) {
         std::vector<Trade> all_trades;
         auto triggered = order_book_.check_and_trigger_all_stops(market_price);
         for (auto& order : triggered) {
             OrderType new_type = order.type == OrderType::StopLoss ? OrderType::Market : OrderType::Limit;
             order.type = new_type;
             order.status = OrderStatus::New;
-            auto trades = process_order(order);
+            auto trades = process_order(seq, order);
             all_trades.insert(all_trades.end(), trades.begin(), trades.end());
         }
         return all_trades;
+    }
+
+    std::vector<Trade> on_market_tick(int64_t market_price) {
+        return on_market_tick(default_sequencer_, market_price);
     }
 
     OrderBook& order_book() { return order_book_; }
@@ -104,20 +100,24 @@ public:
 
     uint64_t total_trades() const { return trade_id_counter_.load(); }
 
-    bool cancel_order(uint64_t order_id) {
+    bool cancel_order(Sequencer& seq, uint64_t order_id) {
         uint64_t linked_id = order_book_.get_linked_order_id(order_id);
         bool removed = order_book_.remove_order(order_id);
         if (removed) [[likely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy));
+                seq.next(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy));
             if (linked_id != 0) [[unlikely]] {
                 order_book_.remove_order(linked_id);
                 order_book_.unlink_oco_order(order_id);
                 event_store_.publish(ExchangeEvent(
-                    next_sequence(), EventType::OrderCancelled, linked_id, 0, 0, 0, Side::Buy));
+                    seq.next(), EventType::OrderCancelled, linked_id, 0, 0, 0, Side::Buy));
             }
         }
         return removed;
+    }
+
+    bool cancel_order(uint64_t order_id) {
+        return cancel_order(default_sequencer_, order_id);
     }
 
     void link_oco(uint64_t order_id_1, uint64_t order_id_2) {
@@ -135,16 +135,20 @@ public:
         order_book_.clear();
         event_store_.clear();
         trade_id_counter_.store(0);
-        sequence_counter_.store(1);
+        default_sequencer_.reset();
     }
 
-    bool amend_order(uint64_t order_id, uint64_t new_quantity) {
+    bool amend_order(Sequencer& seq, uint64_t order_id, uint64_t new_quantity) {
         bool changed = order_book_.modify_quantity(order_id, new_quantity);
         if (changed) [[likely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy));
+                seq.next(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy));
         }
         return changed;
+    }
+
+    bool amend_order(uint64_t order_id, uint64_t new_quantity) {
+        return amend_order(default_sequencer_, order_id, new_quantity);
     }
 
     template<typename Func>
@@ -157,15 +161,15 @@ private:
         return ++trade_id_counter_;
     }
 
-    void emit_trade(Trade& trade) {
-        trade.sequence = next_sequence();
+    void emit_trade(Sequencer& seq, Trade& trade) {
+        trade.sequence = seq.next();
         event_store_.publish(trade);
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::OrderFilled, trade.order_id,
+            seq.next(), EventType::OrderFilled, trade.order_id,
             trade.price, trade.quantity, 0, trade.side));
     }
 
-    std::vector<Trade> handle_post_only(const Order& order) {
+    std::vector<Trade> handle_post_only(Sequencer& seq, const Order& order) {
         bool would_match = false;
         if (order.is_buy()) {
             would_match = order_book_.has_asks() && order.price >= order_book_.best_ask();
@@ -175,13 +179,13 @@ private:
 
         if (would_match) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderRejected, order.order_id,
+                seq.next(), EventType::OrderRejected, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
             return {};
         }
 
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::OrderAccepted, order.order_id,
+            seq.next(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
         Order mutable_order = order;
@@ -190,7 +194,7 @@ private:
         return {};
     }
 
-    std::vector<Trade> handle_fok(const Order& order) {
+    std::vector<Trade> handle_fok(Sequencer& seq, const Order& order) {
         uint64_t available;
         if (order.type == OrderType::Market) {
             available = order.is_buy() ? order_book_.total_ask_volume() : order_book_.total_bid_volume();
@@ -202,28 +206,28 @@ private:
 
         if (available < order.remaining_quantity()) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
-                next_sequence(), EventType::OrderRejected, order.order_id,
+                seq.next(), EventType::OrderRejected, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
             return {};
         }
 
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::OrderAccepted, order.order_id,
+            seq.next(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
-        return order.type == OrderType::Market ? handle_market_order(order) : handle_limit_order(order);
+        return order.type == OrderType::Market ? handle_market_order(seq, order) : handle_limit_order(seq, order);
     }
 
-    std::vector<Trade> handle_ioc(const Order& order) {
+    std::vector<Trade> handle_ioc(Sequencer& seq, const Order& order) {
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::OrderAccepted, order.order_id,
+            seq.next(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
         std::vector<Trade> trades;
         if (order.type == OrderType::Market) {
-            trades = handle_market_order(order);
+            trades = handle_market_order(seq, order);
         } else {
-            trades = handle_limit_order(order);
+            trades = handle_limit_order(seq, order);
         }
 
         if (!trades.empty()) {
@@ -231,7 +235,7 @@ private:
             if (found && found->remaining_quantity() > 0) [[unlikely]] {
                 order_book_.remove_order(order.order_id);
                 event_store_.publish(ExchangeEvent(
-                    next_sequence(), EventType::OrderCancelled, order.order_id,
+                    seq.next(), EventType::OrderCancelled, order.order_id,
                     order.price, found->remaining_quantity(), found->remaining_quantity(), order.side));
             }
         }
@@ -239,7 +243,7 @@ private:
         return trades;
     }
 
-    std::vector<Trade> handle_limit_order(const Order& order) {
+    std::vector<Trade> handle_limit_order(Sequencer& seq, const Order& order) {
         std::vector<Trade> trades;
         Order mutable_order = order;
 
@@ -260,7 +264,7 @@ private:
                     best_ask->order_id, mutable_order.timestamp,
                     match_price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_ask->filled_quantity += match_qty;
@@ -290,7 +294,7 @@ private:
                     best_bid->order_id, mutable_order.timestamp,
                     match_price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_bid->filled_quantity += match_qty;
@@ -308,15 +312,15 @@ private:
         return trades;
     }
 
-    std::vector<Trade> handle_stop_order(const Order& order, bool) {
+    std::vector<Trade> handle_stop_order(Sequencer& seq, const Order& order, bool) {
         order_book_.add_pending_stop(order);
         event_store_.publish(ExchangeEvent(
-            next_sequence(), EventType::StopTriggered, order.order_id,
+            seq.next(), EventType::StopTriggered, order.order_id,
             order.stop_price, order.quantity, order.quantity, order.side));
         return {};
     }
 
-    std::vector<Trade> handle_iceberg_order(const Order& order) {
+    std::vector<Trade> handle_iceberg_order(Sequencer& seq, const Order& order) {
         std::vector<Trade> trades;
         Order mutable_order = order;
 
@@ -343,7 +347,7 @@ private:
                     best_ask->order_id, mutable_order.timestamp,
                     match_price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_ask->filled_quantity += match_qty;
@@ -373,7 +377,7 @@ private:
                     best_bid->order_id, mutable_order.timestamp,
                     match_price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_bid->filled_quantity += match_qty;
@@ -391,7 +395,7 @@ private:
         return trades;
     }
 
-    std::vector<Trade> handle_market_order(const Order& order) {
+    std::vector<Trade> handle_market_order(Sequencer& seq, const Order& order) {
         std::vector<Trade> trades;
         Order mutable_order = order;
 
@@ -409,7 +413,7 @@ private:
                     best_ask->order_id, mutable_order.timestamp,
                     best_ask->price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_ask->filled_quantity += match_qty;
@@ -432,7 +436,7 @@ private:
                     best_bid->order_id, mutable_order.timestamp,
                     best_bid->price, match_qty, mutable_order.side
                 };
-                emit_trade(trade);
+                emit_trade(seq, trade);
                 trades.push_back(trade);
 
                 best_bid->filled_quantity += match_qty;
@@ -449,7 +453,7 @@ private:
     OrderBook order_book_;
     EventStore event_store_;
     std::atomic<uint64_t> trade_id_counter_{0};
-    std::atomic<uint64_t> sequence_counter_{1};
+    Sequencer default_sequencer_;
 };
 
 }
