@@ -15,7 +15,8 @@ enum class OrderType : uint8_t {
     Limit = 1,
     StopLoss = 2,
     StopLimit = 3,
-    Iceberg = 4
+    Iceberg = 4,
+    PostOnly = 5
 };
 
 enum class OrderStatus : uint8_t {

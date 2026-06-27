@@ -1248,6 +1248,97 @@ void test_pending_stops() {
     std::cout << "PASSED\n";
 }
 
+void test_post_only_order() {
+    std::cout << "Test: PostOnly Order... ";
+    
+    MatchingEngine engine;
+    
+    Order resting(1, 1, 1000, 100000, 100, Side::Sell);
+    engine.process_order(resting);
+    assert(engine.order_book().has_asks());
+    assert(engine.order_book().best_ask() == 100000);
+    
+    Order post_buy(2, 1, 1001, 100000, 50, Side::Buy, OrderType::PostOnly);
+    auto trades = engine.process_order(post_buy);
+    assert(trades.empty());
+    assert(engine.order_book().has_asks());
+    assert(engine.order_book().best_ask() == 100000);
+    
+    Order post_buy_no_match(3, 1, 1002, 99900, 50, Side::Buy, OrderType::PostOnly);
+    trades = engine.process_order(post_buy_no_match);
+    assert(trades.empty());
+    assert(engine.order_book().has_bids());
+    assert(engine.order_book().best_bid() == 99900);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_ioc_order() {
+    std::cout << "Test: IOC Order... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Sell));
+    engine.process_order(Order(2, 1, 1001, 100200, 100, Side::Sell));
+    assert(engine.order_book().ask_levels() == 2);
+    
+    Order ioc_buy(3, 1, 1002, 100000, 150, Side::Buy, OrderType::Limit);
+    ioc_buy.time_in_force = TimeInForce::IOC;
+    auto trades = engine.process_order(ioc_buy);
+    assert(trades.size() == 1);
+    assert(trades[0].quantity == 100);
+    assert(engine.order_book().find_order(3) == nullptr);
+    
+    std::cout << "PASSED\n";
+}
+
+void test_fok_order() {
+    std::cout << "Test: FOK Order... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 50, Side::Sell));
+    assert(engine.order_book().ask_levels() == 1);
+    
+    Order fok_buy_too_large(2, 1, 1001, 100500, 100, Side::Buy, OrderType::Limit);
+    fok_buy_too_large.time_in_force = TimeInForce::FOK;
+    auto trades = engine.process_order(fok_buy_too_large);
+    assert(trades.empty());
+    assert(engine.order_book().ask_levels() == 1);
+    
+    Order fok_buy_exact(3, 1, 1002, 100000, 50, Side::Buy, OrderType::Limit);
+    fok_buy_exact.time_in_force = TimeInForce::FOK;
+    trades = engine.process_order(fok_buy_exact);
+    assert(trades.size() == 1);
+    assert(trades[0].quantity == 50);
+    assert(!engine.order_book().has_asks());
+    
+    std::cout << "PASSED\n";
+}
+
+void test_fok_market_order() {
+    std::cout << "Test: FOK Market Order... ";
+    
+    MatchingEngine engine;
+    
+    engine.process_order(Order(1, 1, 1000, 100000, 100, Side::Sell));
+    
+    Order fok_market(2, 1, 1001, 0, 200, Side::Buy, OrderType::Market);
+    fok_market.time_in_force = TimeInForce::FOK;
+    auto trades = engine.process_order(fok_market);
+    assert(trades.empty());
+    assert(engine.order_book().has_asks());
+    
+    Order fok_market_exact(3, 1, 1002, 0, 100, Side::Buy, OrderType::Market);
+    fok_market_exact.time_in_force = TimeInForce::FOK;
+    trades = engine.process_order(fok_market_exact);
+    assert(trades.size() == 1);
+    assert(trades[0].quantity == 100);
+    assert(!engine.order_book().has_asks());
+    
+    std::cout << "PASSED\n";
+}
+
 void test_vwap_strategy() {
     std::cout << "Test: VWAPStrategy... ";
     
@@ -1449,6 +1540,10 @@ int main() {
     test_order_status_enum();
     test_order_fields();
     test_pending_stops();
+    test_post_only_order();
+    test_ioc_order();
+    test_fok_order();
+    test_fok_market_order();
     test_vwap_strategy();
     test_vwap_market_maker();
     

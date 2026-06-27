@@ -24,7 +24,7 @@ public:
         event_store_.subscribe_trades(std::move(callback));
     }
 
-    void set_event_callback(std::function<void(const ExchangeEvent&)> callback) {
+    void set_event_callback(EventCallback callback) {
         event_store_.subscribe_events(std::move(callback));
     }
 
@@ -47,16 +47,35 @@ public:
         std::vector<Trade> trades;
         trades.reserve(8);
 
+        if (order.type == OrderType::StopLoss) {
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderAccepted, order.order_id,
+                order.price, order.quantity, order.quantity, order.side));
+            return handle_stop_order(order, true);
+        }
+        if (order.type == OrderType::StopLimit) {
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderAccepted, order.order_id,
+                order.price, order.quantity, order.quantity, order.side));
+            return handle_stop_order(order, false);
+        }
+
+        if (order.type == OrderType::PostOnly) {
+            return handle_post_only(order);
+        }
+
+        if (order.time_in_force == TimeInForce::FOK) {
+            return handle_fok(order);
+        }
+
+        if (order.time_in_force == TimeInForce::IOC) {
+            return handle_ioc(order);
+        }
+
         event_store_.publish(ExchangeEvent(
             next_sequence(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
-        if (order.type == OrderType::StopLoss) {
-            return handle_stop_order(order, true);
-        }
-        if (order.type == OrderType::StopLimit) {
-            return handle_stop_order(order, false);
-        }
         if (order.type == OrderType::Iceberg) {
             return handle_iceberg_order(order);
         }
@@ -144,6 +163,80 @@ private:
         event_store_.publish(ExchangeEvent(
             next_sequence(), EventType::OrderFilled, trade.order_id,
             trade.price, trade.quantity, 0, trade.side));
+    }
+
+    std::vector<Trade> handle_post_only(const Order& order) {
+        bool would_match = false;
+        if (order.is_buy()) {
+            would_match = order_book_.has_asks() && order.price >= order_book_.best_ask();
+        } else {
+            would_match = order_book_.has_bids() && order.price <= order_book_.best_bid();
+        }
+
+        if (would_match) {
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderRejected, order.order_id,
+                order.price, order.quantity, order.quantity, order.side));
+            return {};
+        }
+
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::OrderAccepted, order.order_id,
+            order.price, order.quantity, order.quantity, order.side));
+
+        Order mutable_order = order;
+        mutable_order.type = OrderType::Limit;
+        handle_post_order(mutable_order);
+        return {};
+    }
+
+    std::vector<Trade> handle_fok(const Order& order) {
+        uint64_t available;
+        if (order.type == OrderType::Market) {
+            available = order.is_buy() ? order_book_.total_ask_volume() : order_book_.total_bid_volume();
+        } else {
+            available = order.is_buy()
+                ? order_book_.total_ask_volume_up_to(order.price)
+                : order_book_.total_bid_volume_down_to(order.price);
+        }
+
+        if (available < order.remaining_quantity()) {
+            event_store_.publish(ExchangeEvent(
+                next_sequence(), EventType::OrderRejected, order.order_id,
+                order.price, order.quantity, order.quantity, order.side));
+            return {};
+        }
+
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::OrderAccepted, order.order_id,
+            order.price, order.quantity, order.quantity, order.side));
+
+        return order.type == OrderType::Market ? handle_market_order(order) : handle_limit_order(order);
+    }
+
+    std::vector<Trade> handle_ioc(const Order& order) {
+        event_store_.publish(ExchangeEvent(
+            next_sequence(), EventType::OrderAccepted, order.order_id,
+            order.price, order.quantity, order.quantity, order.side));
+
+        std::vector<Trade> trades;
+        if (order.type == OrderType::Market) {
+            trades = handle_market_order(order);
+        } else {
+            trades = handle_limit_order(order);
+        }
+
+        if (!trades.empty() && order_book_.find_order(order.order_id)) {
+            uint64_t remaining = order_book_.find_order(order.order_id)->remaining_quantity();
+            if (remaining > 0) {
+                order_book_.remove_order(order.order_id);
+                event_store_.publish(ExchangeEvent(
+                    next_sequence(), EventType::OrderCancelled, order.order_id,
+                    order.price, remaining, remaining, order.side));
+            }
+        }
+
+        return trades;
     }
 
     std::vector<Trade> handle_limit_order(const Order& order) {

@@ -210,6 +210,24 @@ public:
         return vol;
     }
 
+    uint64_t total_ask_volume_up_to(int64_t price) const {
+        uint64_t vol = 0;
+        for (int64_t p : ask_levels_set_) {
+            if (p > price) break;
+            vol += total_quantity_at(ask_ladder_[ladder_.price_to_index(p)]);
+        }
+        return vol;
+    }
+
+    uint64_t total_bid_volume_down_to(int64_t price) const {
+        uint64_t vol = 0;
+        for (auto it = bid_levels_set_.rbegin(); it != bid_levels_set_.rend(); ++it) {
+            if (*it < price) break;
+            vol += total_quantity_at(bid_ladder_[ladder_.price_to_index(*it)]);
+        }
+        return vol;
+    }
+
     void add_pending_stop(const Order& order) {
         pending_stop_orders_.push_back(order);
     }
