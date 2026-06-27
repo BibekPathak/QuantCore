@@ -328,7 +328,7 @@ public:
     }
 
 private:
-    struct PriceLevel {
+    struct alignas(64) PriceLevel {
         Order* head = nullptr;
         Order* tail = nullptr;
         uint64_t count = 0;

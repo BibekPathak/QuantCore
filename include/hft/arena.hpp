@@ -47,8 +47,9 @@ public:
     }
 
     void init(size_t capacity) {
-        buffer_ = static_cast<char*>(std::aligned_alloc(alignof(Order), capacity));
-        capacity_ = capacity;
+        size_t aligned_capacity = (capacity + alignof(Order) - 1) & ~(alignof(Order) - 1);
+        buffer_ = static_cast<char*>(std::aligned_alloc(alignof(Order), aligned_capacity));
+        capacity_ = aligned_capacity;
         bump_offset_ = 0;
         free_head_ = nullptr;
     }

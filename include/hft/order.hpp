@@ -37,13 +37,15 @@ enum class TimeInForce : uint8_t {
     GTD = 4
 };
 
-struct Order {
+struct alignas(64) Order {
     uint64_t order_id;
-    uint64_t client_id;
-    uint64_t timestamp;
+    int64_t price;
     uint64_t quantity;
     uint64_t filled_quantity;
-    int64_t price;
+    Order* next;
+    Order* prev;
+    uint64_t client_id;
+    uint64_t timestamp;
     Side side;
     OrderType type;
     OrderStatus status;
@@ -53,18 +55,18 @@ struct Order {
     uint64_t revealed_quantity;
     uint64_t linked_order_id;
     uint64_t expire_time;
-    Order* next;
-    Order* prev;
 
     Order() = default;
 
     Order(uint64_t id, uint64_t cid, uint64_t ts, int64_t p, uint64_t q, Side s, OrderType t = OrderType::Limit)
         : order_id(id)
-        , client_id(cid)
-        , timestamp(ts)
+        , price(p)
         , quantity(q)
         , filled_quantity(0)
-        , price(p)
+        , next(nullptr)
+        , prev(nullptr)
+        , client_id(cid)
+        , timestamp(ts)
         , side(s)
         , type(t)
         , status(OrderStatus::New)
@@ -74,8 +76,6 @@ struct Order {
         , revealed_quantity(0)
         , linked_order_id(0)
         , expire_time(0)
-        , next(nullptr)
-        , prev(nullptr)
     {}
 
     bool is_buy() const { return side == Side::Buy; }

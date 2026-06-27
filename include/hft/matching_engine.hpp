@@ -47,28 +47,28 @@ public:
         std::vector<Trade> trades;
         trades.reserve(8);
 
-        if (order.type == OrderType::StopLoss) {
+        if (order.type == OrderType::StopLoss) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderAccepted, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
             return handle_stop_order(order, true);
         }
-        if (order.type == OrderType::StopLimit) {
+        if (order.type == OrderType::StopLimit) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderAccepted, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
             return handle_stop_order(order, false);
         }
 
-        if (order.type == OrderType::PostOnly) {
+        if (order.type == OrderType::PostOnly) [[unlikely]] {
             return handle_post_only(order);
         }
 
-        if (order.time_in_force == TimeInForce::FOK) {
+        if (order.time_in_force == TimeInForce::FOK) [[unlikely]] {
             return handle_fok(order);
         }
 
-        if (order.time_in_force == TimeInForce::IOC) {
+        if (order.time_in_force == TimeInForce::IOC) [[unlikely]] {
             return handle_ioc(order);
         }
 
@@ -76,10 +76,10 @@ public:
             next_sequence(), EventType::OrderAccepted, order.order_id,
             order.price, order.quantity, order.quantity, order.side));
 
-        if (order.type == OrderType::Iceberg) {
+        if (order.type == OrderType::Iceberg) [[unlikely]] {
             return handle_iceberg_order(order);
         }
-        if (order.type == OrderType::Market) {
+        if (order.type == OrderType::Market) [[unlikely]] {
             return handle_market_order(order);
         }
 
@@ -107,10 +107,10 @@ public:
     bool cancel_order(uint64_t order_id) {
         uint64_t linked_id = order_book_.get_linked_order_id(order_id);
         bool removed = order_book_.remove_order(order_id);
-        if (removed) {
+        if (removed) [[likely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderCancelled, order_id, 0, 0, 0, Side::Buy));
-            if (linked_id != 0) {
+            if (linked_id != 0) [[unlikely]] {
                 order_book_.remove_order(linked_id);
                 order_book_.unlink_oco_order(order_id);
                 event_store_.publish(ExchangeEvent(
@@ -125,7 +125,7 @@ public:
     }
 
     void handle_post_order(Order& order) {
-        if (order.linked_order_id != 0) {
+        if (order.linked_order_id != 0) [[unlikely]] {
             order_book_.link_oco_orders(order.order_id, order.linked_order_id);
         }
         order_book_.add_order(order);
@@ -140,7 +140,7 @@ public:
 
     bool amend_order(uint64_t order_id, uint64_t new_quantity) {
         bool changed = order_book_.modify_quantity(order_id, new_quantity);
-        if (changed) {
+        if (changed) [[likely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderModified, order_id, 0, new_quantity, 0, Side::Buy));
         }
@@ -173,7 +173,7 @@ private:
             would_match = order_book_.has_bids() && order.price <= order_book_.best_bid();
         }
 
-        if (would_match) {
+        if (would_match) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderRejected, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
@@ -200,7 +200,7 @@ private:
                 : order_book_.total_bid_volume_down_to(order.price);
         }
 
-        if (available < order.remaining_quantity()) {
+        if (available < order.remaining_quantity()) [[unlikely]] {
             event_store_.publish(ExchangeEvent(
                 next_sequence(), EventType::OrderRejected, order.order_id,
                 order.price, order.quantity, order.quantity, order.side));
@@ -226,13 +226,13 @@ private:
             trades = handle_limit_order(order);
         }
 
-        if (!trades.empty() && order_book_.find_order(order.order_id)) {
-            uint64_t remaining = order_book_.find_order(order.order_id)->remaining_quantity();
-            if (remaining > 0) {
+        if (!trades.empty()) {
+            auto* found = order_book_.find_order(order.order_id);
+            if (found && found->remaining_quantity() > 0) [[unlikely]] {
                 order_book_.remove_order(order.order_id);
                 event_store_.publish(ExchangeEvent(
                     next_sequence(), EventType::OrderCancelled, order.order_id,
-                    order.price, remaining, remaining, order.side));
+                    order.price, found->remaining_quantity(), found->remaining_quantity(), order.side));
             }
         }
 
@@ -243,12 +243,14 @@ private:
         std::vector<Trade> trades;
         Order mutable_order = order;
 
-        if (mutable_order.is_buy()) {
+        if (mutable_order.is_buy()) [[likely]] {
             while (order_book_.has_asks() &&
                    mutable_order.remaining_quantity() > 0 &&
                    mutable_order.price >= order_book_.best_ask()) {
                 auto* best_ask = order_book_.get_best_ask();
-                if (!best_ask) break;
+                if (!best_ask) [[unlikely]] break;
+
+                __builtin_prefetch(best_ask->next, 0, 1);
 
                 int64_t match_price = best_ask->price;
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
@@ -263,12 +265,12 @@ private:
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_ask->is_filled()) {
+                if (best_ask->is_filled()) [[likely]] {
                     order_book_.pop_best_ask();
                 }
             }
 
-            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) {
+            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) [[likely]] {
                 handle_post_order(mutable_order);
             }
         } else {
@@ -276,7 +278,9 @@ private:
                    mutable_order.remaining_quantity() > 0 &&
                    mutable_order.price <= order_book_.best_bid()) {
                 auto* best_bid = order_book_.get_best_bid();
-                if (!best_bid) break;
+                if (!best_bid) [[unlikely]] break;
+
+                __builtin_prefetch(best_bid->next, 0, 1);
 
                 int64_t match_price = best_bid->price;
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
@@ -291,12 +295,12 @@ private:
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_bid->is_filled()) {
+                if (best_bid->is_filled()) [[likely]] {
                     order_book_.pop_best_bid();
                 }
             }
 
-            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) {
+            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) [[likely]] {
                 handle_post_order(mutable_order);
             }
         }
@@ -322,12 +326,14 @@ private:
         mutable_order.quantity = visible_qty;
         mutable_order.status = OrderStatus::New;
 
-        if (mutable_order.is_buy()) {
+        if (mutable_order.is_buy()) [[likely]] {
             while (order_book_.has_asks() &&
                    mutable_order.remaining_quantity() > 0 &&
                    mutable_order.price >= order_book_.best_ask()) {
                 auto* best_ask = order_book_.get_best_ask();
-                if (!best_ask) break;
+                if (!best_ask) [[unlikely]] break;
+
+                __builtin_prefetch(best_ask->next, 0, 1);
 
                 int64_t match_price = best_ask->price;
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
@@ -342,12 +348,12 @@ private:
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_ask->is_filled()) {
+                if (best_ask->is_filled()) [[likely]] {
                     order_book_.pop_best_ask();
                 }
             }
 
-            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) {
+            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) [[likely]] {
                 order_book_.add_order(mutable_order);
             }
         } else {
@@ -355,7 +361,9 @@ private:
                    mutable_order.remaining_quantity() > 0 &&
                    mutable_order.price <= order_book_.best_bid()) {
                 auto* best_bid = order_book_.get_best_bid();
-                if (!best_bid) break;
+                if (!best_bid) [[unlikely]] break;
+
+                __builtin_prefetch(best_bid->next, 0, 1);
 
                 int64_t match_price = best_bid->price;
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
@@ -370,12 +378,12 @@ private:
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_bid->is_filled()) {
+                if (best_bid->is_filled()) [[likely]] {
                     order_book_.pop_best_bid();
                 }
             }
 
-            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) {
+            if (mutable_order.remaining_quantity() > 0 && mutable_order.is_active()) [[likely]] {
                 order_book_.add_order(mutable_order);
             }
         }
@@ -387,10 +395,12 @@ private:
         std::vector<Trade> trades;
         Order mutable_order = order;
 
-        if (mutable_order.is_buy()) {
+        if (mutable_order.is_buy()) [[likely]] {
             while (order_book_.has_asks() && mutable_order.remaining_quantity() > 0) {
                 auto* best_ask = order_book_.get_best_ask();
-                if (!best_ask) break;
+                if (!best_ask) [[unlikely]] break;
+
+                __builtin_prefetch(best_ask->next, 0, 1);
 
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_ask->remaining_quantity());
 
@@ -404,14 +414,16 @@ private:
 
                 best_ask->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_ask->is_filled()) {
+                if (best_ask->is_filled()) [[likely]] {
                     order_book_.pop_best_ask();
                 }
             }
         } else {
             while (order_book_.has_bids() && mutable_order.remaining_quantity() > 0) {
                 auto* best_bid = order_book_.get_best_bid();
-                if (!best_bid) break;
+                if (!best_bid) [[unlikely]] break;
+
+                __builtin_prefetch(best_bid->next, 0, 1);
 
                 uint64_t match_qty = std::min(mutable_order.remaining_quantity(), best_bid->remaining_quantity());
 
@@ -425,7 +437,7 @@ private:
 
                 best_bid->filled_quantity += match_qty;
                 mutable_order.filled_quantity += match_qty;
-                if (best_bid->is_filled()) {
+                if (best_bid->is_filled()) [[likely]] {
                     order_book_.pop_best_bid();
                 }
             }

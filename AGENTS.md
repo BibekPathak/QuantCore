@@ -20,8 +20,10 @@ g++ -std=c++20 -O2 -I include -c include/hft/binance_feed.hpp -o /dev/null -lcur
 
 ## Performance Results (Current)
 - **Throughput**: ~6.2M orders/sec (full backtest), ~2.6M with EventStore
-- **P50 Latency**: ~154ns (full backtest)
-- **P99 Latency**: ~2.9μs (full backtest)
+- **P50 Latency**: ~152ns (full backtest)
+- **P99 Latency**: ~2.8μs (full backtest)
+- **Order struct size**: 128 bytes (alignas(64))
+- **73 unit tests** all passing
 
 ## Project Structure
 ```
@@ -47,7 +49,7 @@ hft/
 ├── src/
 │   └── main.cpp             # Demo program (backtest + direct throughput)
 └── tests/
-    └── test_order_book.cpp  # 69 unit tests
+    └── test_order_book.cpp  # 73 unit tests
 ```
 
 ## Key Design Decisions
@@ -59,10 +61,20 @@ hft/
 6. **Separate bid/ask ladders** - Each price level has independent bid and ask lists
 7. **C++20** - Variants, structured bindings, if constexpr
 8. **Compiler flags**: -O3 -march=native
+9. **alignas(64) hot structs** - Order + PriceLevel aligned to cache line, false sharing prevention
+10. **Hot/cold field splitting** - Frequently accessed fields in first cache line
+11. **__builtin_prefetch** - Software prefetching on intrusive list traversal in matching loops
+12. **[[likely]]/[[unlikely]]** - Branch hints for better instruction cache layout
+
+## Completed Phases
+- ✅ Phase 1: Arena allocator + Dense ladder + Intrusive list + Matching engine
+- ✅ Phase 2: EventStore/Publisher with sequence numbers
+- ✅ Phase 3: Multi-threaded matching engine + ThreadPool
+- ✅ Phase 4: Risk manager + Stop/Iceberg/OCO orders + Strategy framework
+- ✅ Phase 5: Binance WebSocket feed integration
+- ✅ Phase 6: PostOnly, IOC, FOK order types
+- ✅ Phase 7: CPU optimizations (alignas(64), prefetch, branch hints, field reordering)
 
 ## Next Steps
-1. Phase 5: Binance WebSocket feed integration
-2. Phase 6: PostOnly order type, IOC/FOK support
-3. Phase 7: CPU optimizations (prefetching, alignment, branch hints)
-4. Phase 8: Google Benchmark suite + perf + flamegraphs
-5. Phase 9: Architecture documentation with Mermaid diagrams
+1. Phase 8: Google Benchmark suite + perf + flamegraphs
+2. Phase 9: Architecture documentation with Mermaid diagrams
